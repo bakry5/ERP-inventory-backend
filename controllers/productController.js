@@ -3,6 +3,7 @@ const prisma = require('../config/database');
 const ApiError = require('../utils/apiError');
 const { logAction } = require('../services/auditLogService');
 const { getPagination } = require('../utils/pagination');
+const { uploadBufferToCloudinary, deleteFromCloudinary } = require('../utils/cloudinaryUpload');
 
 // ------------------------------------------------------------------
 // GET /api/v1/products
@@ -103,6 +104,81 @@ exports.deleteProduct = asyncHandler(async (req, res, next) => {
   });
 
   res.status(204).json({ status: 'success', data: null });
+});
+
+// ------------------------------------------------------------------
+// UPLOAD PRODUCT IMAGE  ->  POST /:id/image (multipart/form-data, field "image")
+// Restricted to ADMIN / SUPER_ADMIN via the route. Replaces any existing
+// image: the old Cloudinary asset is deleted only *after* the new one
+// uploads successfully, so a failed upload never leaves the product
+// pointing at a broken/missing image.
+// ------------------------------------------------------------------
+exports.uploadProductImage = asyncHandler(async (req, res, next) => {
+  if (!req.file) {
+    return next(new ApiError('No image file was provided', 400));
+  }
+
+  const product = await prisma.product.findUnique({ where: { id: req.params.id } });
+  if (!product) {
+    return next(new ApiError('Product not found', 404));
+  }
+
+  const result = await uploadBufferToCloudinary(req.file.buffer, 'erp-inventory/products');
+
+  const previousPublicId = product.imagePublicId;
+
+  const updated = await prisma.product.update({
+    where: { id: req.params.id },
+    data: { imageUrl: result.secure_url, imagePublicId: result.public_id },
+  });
+
+  if (previousPublicId) {
+    deleteFromCloudinary(previousPublicId).catch((err) =>
+      console.error(`Failed to delete old product image ${previousPublicId}:`, err.message)
+    );
+  }
+
+  logAction({
+    userId: req.user.id,
+    action: 'UPDATE',
+    entityType: 'Product',
+    entityId: updated.id,
+    metadata: { imageUpdated: true },
+    req,
+  });
+
+  res.status(200).json({ status: 'success', data: { product: updated } });
+});
+
+// ------------------------------------------------------------------
+// DELETE PRODUCT IMAGE
+// ------------------------------------------------------------------
+exports.deleteProductImage = asyncHandler(async (req, res, next) => {
+  const product = await prisma.product.findUnique({ where: { id: req.params.id } });
+  if (!product) {
+    return next(new ApiError('Product not found', 404));
+  }
+  if (!product.imagePublicId) {
+    return next(new ApiError('This product has no image to delete', 400));
+  }
+
+  await deleteFromCloudinary(product.imagePublicId);
+
+  const updated = await prisma.product.update({
+    where: { id: req.params.id },
+    data: { imageUrl: null, imagePublicId: null },
+  });
+
+  logAction({
+    userId: req.user.id,
+    action: 'UPDATE',
+    entityType: 'Product',
+    entityId: updated.id,
+    metadata: { imageRemoved: true },
+    req,
+  });
+
+  res.status(200).json({ status: 'success', data: { product: updated } });
 });
 
 // ------------------------------------------------------------------

@@ -259,3 +259,82 @@ exports.resetPassword = asyncHandler(async (req, res, next) => {
 exports.getMe = asyncHandler(async (req, res) => {
   res.status(200).json({ status: 'success', data: { user: sanitizeUser(req.user) } });
 });
+
+// ------------------------------------------------------------------
+// UPDATE ME  ->  name and/or email. Changing email un-verifies the account
+// and re-sends an OTP — we can't trust the new address is real until it's
+// proven the same way a fresh registration would be.
+// ------------------------------------------------------------------
+exports.updateMe = asyncHandler(async (req, res, next) => {
+  const { name, email } = req.body;
+
+  if (!name && !email) {
+    return next(new ApiError('Provide at least a name or an email to update', 400));
+  }
+
+  const data = {};
+  if (name) data.name = name;
+
+  if (email && email !== req.user.email) {
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      return next(new ApiError('Email already in use', 400));
+    }
+    data.email = email;
+    data.isEmailVerified = false;
+  }
+
+  const user = await prisma.user.update({ where: { id: req.user.id }, data });
+
+  if (data.email) {
+    const otp = generateOtp();
+    await redis.set(`otp:${user.email}`, otp, { ex: OTP_TTL_SECONDS });
+    await sendOtpEmail(user.email, otp);
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: data.email
+      ? 'Profile updated. Please verify your new email address.'
+      : 'Profile updated',
+    data: { user: sanitizeUser(user) },
+  });
+});
+
+// ------------------------------------------------------------------
+// UPDATE PASSWORD (while logged in)  ->  distinct from forgotPassword: the
+// user already has a valid session and proves identity with their current
+// password instead of an emailed reset link.
+//
+// Still bumps tokenVersion — a password change should log out every OTHER
+// device the same way a reset does, while this session keeps working
+// because we immediately reissue cookies built from the new tokenVersion.
+// ------------------------------------------------------------------
+exports.updatePassword = asyncHandler(async (req, res, next) => {
+  const { currentPassword, newPassword } = req.body;
+
+  const isCorrectPassword = await bcrypt.compare(currentPassword, req.user.password);
+  if (!isCorrectPassword) {
+    return next(new ApiError('Current password is incorrect', 401));
+  }
+
+  const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+  const user = await prisma.user.update({
+    where: { id: req.user.id },
+    data: { password: hashedPassword, tokenVersion: { increment: 1 } },
+  });
+
+  // Reissue cookies for THIS session using the new tokenVersion, so the
+  // caller stays logged in; every other device's existing tokens now fail
+  // the tokenVersion check in `protect`/`refresh-token`.
+  setAuthCookies(res, user);
+
+  await sendPasswordChangedEmail(user.email);
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Password updated. You have been logged out on all other devices.',
+  });
+});
+

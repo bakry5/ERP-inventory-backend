@@ -10,20 +10,22 @@ erp-inventory-backend/
 │   └── schema.prisma          # User, Warehouse, Product, Stock, Order, OrderItem, AuditLog
 ├── config/
 │   ├── database.js            # Prisma client singleton (safe for serverless cold starts)
-│   └── redis.js                # Upstash Redis REST client
+│   ├── redis.js                # Upstash Redis REST client
+│   └── cloudinary.js           # Cloudinary SDK config (product image uploads)
 ├── controllers/
-│   ├── authController.js      # register, verifyOtp, resendOtp, login, logout,
-│   │                           #   refreshToken, forgotPassword, resetPassword, getMe
+│   ├── authController.js      # register, verifyOtp, resendOtp, login, logout, refreshToken,
+│   │                           #   forgotPassword, resetPassword, getMe, updateMe, updatePassword
 │   ├── orderController.js     # createOrder/confirmOrder/cancelOrder (reserve→confirm lifecycle),
 │   │                           #   getAllOrders, getOrder, shipOrder, deliverOrder, refundOrder
-│   ├── warehouseController.js # warehouse CRUD (RBAC: admin-only writes)
-│   ├── productController.js   # product CRUD + adjustStock (manual stock in/out)
+│   ├── warehouseController.js # warehouse CRUD (RBAC: admin-only writes, blocks delete-with-stock)
+│   ├── productController.js   # product CRUD, adjustStock, uploadProductImage, deleteProductImage
 │   ├── stockController.js     # getWarehouseStock, getProductStock (read-only inventory views)
 │   └── userController.js      # admin user management: list, view, change role, (de)activate
 ├── middlewares/
 │   ├── authMiddleware.js      # protect, requireEmailVerified, allowedTo (RBAC)
 │   ├── rateLimiter.js         # Upstash sliding-window limiter factory
-│   ├── errorMiddleware.js     # global error handler (JWT + Prisma error translation)
+│   ├── errorMiddleware.js     # global error handler (JWT + Prisma + Multer error translation)
+│   ├── uploadMiddleware.js    # multer memory storage + image-only filter, 5MB cap
 │   └── validatorMiddleware.js
 ├── routes/
 │   ├── authRoute.js
@@ -38,7 +40,8 @@ erp-inventory-backend/
 │   ├── tokens.js               # access/refresh JWT generation + cookie helpers
 │   ├── otp.js                  # OTP + reset-token generation/hashing
 │   ├── email.js                # Nodemailer transporter (Brevo SMTP) + templates
-│   └── pagination.js           # shared ?page/?limit parsing + response meta
+│   ├── pagination.js           # shared ?page/?limit parsing + response meta
+│   └── cloudinaryUpload.js     # buffer → Cloudinary upload/delete helpers
 ├── validators/
 │   ├── authValidator.js
 │   ├── warehouseValidator.js
@@ -117,17 +120,21 @@ matched case-insensitively against both `name` and `sku`.
 | POST | `/auth/forgot-password` | public | |
 | PATCH | `/auth/reset-password/:token` | public (valid token) | bumps `tokenVersion` — logs out every device |
 | GET | `/auth/me` | authenticated | |
+| PATCH | `/auth/update-me` | authenticated | name and/or email; changing email un-verifies + re-sends OTP |
+| PATCH | `/auth/update-password` | authenticated | requires `currentPassword`; bumps `tokenVersion` — logs out every *other* device, this session stays in |
 | GET | `/warehouses` | authenticated | paginated |
 | GET | `/warehouses/:id` | authenticated | |
 | GET | `/warehouses/:id/stock` | authenticated | every product's quantity in this warehouse |
 | POST / PATCH | `/warehouses` `/warehouses/:id` | `SUPER_ADMIN`, `ADMIN` | |
-| DELETE | `/warehouses/:id` | `SUPER_ADMIN` | |
+| DELETE | `/warehouses/:id` | `SUPER_ADMIN` | rejected (409) if the warehouse still has any stock rows |
 | GET | `/products` | authenticated | paginated, `?search=` |
 | GET | `/products/:id` | authenticated | |
 | GET | `/products/:id/stock` | authenticated | this product's quantity across every warehouse |
 | POST / PATCH | `/products` `/products/:id` | `SUPER_ADMIN`, `ADMIN` | |
 | DELETE | `/products/:id` | `SUPER_ADMIN` | soft delete |
 | POST | `/products/stock/adjust` | `SUPER_ADMIN`, `ADMIN`, `WAREHOUSE_MANAGER` | manual stock-in/out |
+| POST | `/products/:id/image` | `SUPER_ADMIN`, `ADMIN` | multipart field `image`, max 5MB — uploads to Cloudinary |
+| DELETE | `/products/:id/image` | `SUPER_ADMIN`, `ADMIN` | removes the Cloudinary asset + clears `imageUrl` |
 | GET | `/orders/my-orders` | authenticated | own orders, paginated |
 | GET | `/orders` | staff (`SUPER_ADMIN`/`ADMIN`/`WAREHOUSE_MANAGER`) | every order, `?status=` filter |
 | GET | `/orders/:id` | owner or staff | |
@@ -186,3 +193,13 @@ npm run start:dev
 1. Create a project at [neon.com](https://neon.com) (GitHub login, no card needed on the free tier).
 2. On the project dashboard, copy the **Connection string** shown — it already includes `?sslmode=require`.
 3. Paste it as `DATABASE_URL` in `.env`, then run `npx prisma migrate dev --name init` to create the tables.
+
+### Getting Cloudinary credentials (for product images)
+
+1. Create a free account at [cloudinary.com](https://cloudinary.com).
+2. Your dashboard homepage shows **Cloud name**, **API Key**, and **API Secret** directly — copy
+   all three into `.env` as `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`.
+3. Uploads go through `POST /api/v1/products/:id/image` as `multipart/form-data` with the file in
+   a field named `image` (5MB max, images only) — uploaded assets land in the `erp-inventory/products`
+   folder in your Cloudinary media library.
+

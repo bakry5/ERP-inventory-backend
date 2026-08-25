@@ -8,6 +8,8 @@ const {
   verifyOtpValidator,
   forgotPasswordValidator,
   resetPasswordValidator,
+  updateMeValidator,
+  updatePasswordValidator,
 } = require('../validators/authValidator');
 
 const router = express.Router();
@@ -35,5 +37,12 @@ router.post(
 router.patch('/reset-password/:token', resetPasswordValidator, authController.resetPassword);
 
 router.get('/me', protect, authController.getMe);
+router.patch('/update-me', protect, updateMeValidator, authController.updateMe);
+router.patch(
+  '/update-password',
+  protect,
+  updatePasswordValidator,
+  authController.updatePassword
+);
 
 module.exports = router;

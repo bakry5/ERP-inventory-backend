@@ -1,6 +1,7 @@
 const express = require('express');
 const productController = require('../controllers/productController');
 const stockController = require('../controllers/stockController');
+const upload = require('../middlewares/uploadMiddleware');
 const { protect, allowedTo } = require('../middlewares/authMiddleware');
 const {
   createProductValidator,
@@ -46,6 +47,23 @@ router.post(
   allowedTo('SUPER_ADMIN', 'ADMIN', 'WAREHOUSE_MANAGER'),
   adjustStockValidator,
   productController.adjustStock
+);
+
+// Image upload — multer parses the multipart body into req.file (memory
+// buffer) before the controller uploads it to Cloudinary.
+router.post(
+  '/:id/image',
+  allowedTo('SUPER_ADMIN', 'ADMIN'),
+  productIdValidator,
+  upload.single('image'),
+  productController.uploadProductImage
+);
+
+router.delete(
+  '/:id/image',
+  allowedTo('SUPER_ADMIN', 'ADMIN'),
+  productIdValidator,
+  productController.deleteProductImage
 );
 
 module.exports = router;

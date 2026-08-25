@@ -18,6 +18,19 @@ const handleJwtInvalidSignature = () =>
 
 const handleJwtExpired = () => new ApiError('Expired token, please login again', 401);
 
+// Multer throws its own error class for upload problems (file too large,
+// wrong field name, etc.) — translate the common ones into clean messages
+// instead of leaking the raw MulterError.
+const handleMulterError = (err) => {
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return new ApiError('Image is too large — max size is 5MB', 400);
+  }
+  if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+    return new ApiError(`Unexpected file field: ${err.field}`, 400);
+  }
+  return new ApiError(`Upload error: ${err.message}`, 400);
+};
+
 // Prisma throws structured errors with a `code` (e.g. P2002 = unique constraint).
 // We translate the common ones into clean, operational ApiErrors instead of
 // leaking raw Prisma internals to the client.
@@ -41,6 +54,7 @@ const globalError = (err, req, res, next) => {
 
   if (err.name === 'JsonWebTokenError') err = handleJwtInvalidSignature();
   if (err.name === 'TokenExpiredError') err = handleJwtExpired();
+  if (err.name === 'MulterError') err = handleMulterError(err);
   if (err.code && err.code.startsWith?.('P')) err = handlePrismaKnownError(err);
 
   if (process.env.NODE_ENV === 'development') {

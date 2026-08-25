@@ -102,6 +102,8 @@ model Product {
   name        String
   description String?
   price       Decimal @db.Decimal(10, 2)
+  imageUrl    String?
+  imagePublicId String? // Cloudinary public_id — needed to replace/delete the old image later
 
   isActive Boolean @default(true)
 

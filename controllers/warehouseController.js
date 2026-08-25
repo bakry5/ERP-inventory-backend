@@ -72,6 +72,25 @@ exports.deleteWarehouse = asyncHandler(async (req, res, next) => {
     return next(new ApiError('Warehouse not found', 404));
   }
 
+  // Guard against silently cascading away real inventory data. Any stock
+  // row at all (even quantity 0 but reserved) means this warehouse is still
+  // "in use" — force the admin to move/zero it out first, on purpose.
+  const stockCount = await prisma.stock.count({ where: { warehouseId: req.params.id } });
+  if (stockCount > 0) {
+    const totalUnits = await prisma.stock.aggregate({
+      where: { warehouseId: req.params.id },
+      _sum: { quantity: true, reservedQuantity: true },
+    });
+    return next(
+      new ApiError(
+        `Cannot delete warehouse "${warehouse.name}" — it still has stock records for ${stockCount} product(s) ` +
+          `(${totalUnits._sum.quantity || 0} units on hand, ${totalUnits._sum.reservedQuantity || 0} reserved). ` +
+          `Move or zero out the stock first.`,
+        409
+      )
+    );
+  }
+
   await prisma.warehouse.delete({ where: { id: req.params.id } });
 
   logAction({

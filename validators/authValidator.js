@@ -38,3 +38,19 @@ exports.resetPasswordValidator = [
     .withMessage('Password must contain at least one number'),
   validatorMiddleware,
 ];
+
+exports.updateMeValidator = [
+  body('name').optional().trim().notEmpty().withMessage('Name cannot be empty'),
+  body('email').optional().isEmail().withMessage('Please provide a valid email').normalizeEmail(),
+  validatorMiddleware,
+];
+
+exports.updatePasswordValidator = [
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+  body('newPassword')
+    .isLength({ min: 8 })
+    .withMessage('Password must be at least 8 characters')
+    .matches(/\d/)
+    .withMessage('Password must contain at least one number'),
+  validatorMiddleware,
+];
