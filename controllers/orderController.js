@@ -3,6 +3,7 @@ const prisma = require('../config/database');
 const ApiError = require('../utils/apiError');
 const { sendOrderInvoiceEmail } = require('../utils/email');
 const { logAction } = require('../services/auditLogService');
+const { getPagination } = require('../utils/pagination');
 
 // ------------------------------------------------------------------
 // CREATE ORDER  ->  status PENDING, stock RESERVED (not yet deducted).
@@ -225,11 +226,112 @@ exports.cancelOrder = asyncHandler(async (req, res, next) => {
 });
 
 exports.getMyOrders = asyncHandler(async (req, res) => {
-  const orders = await prisma.order.findMany({
-    where: { userId: req.user.id },
-    include: { items: true },
-    orderBy: { createdAt: 'desc' },
+  const { skip, take, buildMeta } = getPagination(req.query);
+  const where = { userId: req.user.id };
+
+  const [orders, total] = await Promise.all([
+    prisma.order.findMany({
+      where,
+      include: { items: true },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take,
+    }),
+    prisma.order.count({ where }),
+  ]);
+
+  res.status(200).json({ status: 'success', data: { orders }, meta: buildMeta(total) });
+});
+
+// ------------------------------------------------------------------
+// GET /api/v1/orders  (staff-only — SUPER_ADMIN, ADMIN, WAREHOUSE_MANAGER)
+// Every order in the system, not just the caller's own. Optional
+// ?status=PENDING filter — this is the endpoint fulfillment staff use to
+// find orders waiting on confirmOrder/cancelOrder.
+// ------------------------------------------------------------------
+exports.getAllOrders = asyncHandler(async (req, res) => {
+  const { skip, take, buildMeta } = getPagination(req.query);
+  const where = req.query.status ? { status: req.query.status } : {};
+
+  const [orders, total] = await Promise.all([
+    prisma.order.findMany({
+      where,
+      include: { items: true, user: { select: { id: true, name: true, email: true } } },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take,
+    }),
+    prisma.order.count({ where }),
+  ]);
+
+  res.status(200).json({ status: 'success', data: { orders }, meta: buildMeta(total) });
+});
+
+// ------------------------------------------------------------------
+// GET /api/v1/orders/:id  (the order's owner, or staff)
+// ------------------------------------------------------------------
+exports.getOrder = asyncHandler(async (req, res, next) => {
+  const order = await prisma.order.findUnique({
+    where: { id: req.params.id },
+    include: { items: { include: { product: true } }, user: { select: { id: true, name: true, email: true } } },
   });
 
-  res.status(200).json({ status: 'success', results: orders.length, data: { orders } });
+  if (!order) {
+    return next(new ApiError('Order not found', 404));
+  }
+
+  const isOwner = order.userId === req.user.id;
+  const isStaff = ['SUPER_ADMIN', 'ADMIN', 'WAREHOUSE_MANAGER'].includes(req.user.role);
+  if (!isOwner && !isStaff) {
+    return next(new ApiError('You are not allowed to view this order', 403));
+  }
+
+  res.status(200).json({ status: 'success', data: { order } });
 });
+
+// ------------------------------------------------------------------
+// Fulfillment status transitions past CONFIRMED — these don't touch stock
+// (that already happened at confirmOrder), they just move the order through
+// its shipping lifecycle. Staff-only via the route.
+// ------------------------------------------------------------------
+const transitionOrderStatus = (fromStatuses, toStatus) =>
+  asyncHandler(async (req, res, next) => {
+    const order = await prisma.order.findUnique({ where: { id: req.params.id } });
+    if (!order) {
+      return next(new ApiError('Order not found', 404));
+    }
+    if (!fromStatuses.includes(order.status)) {
+      return next(
+        new ApiError(
+          `Cannot move an order from ${order.status} to ${toStatus} (expected one of: ${fromStatuses.join(', ')})`,
+          400
+        )
+      );
+    }
+
+    const updated = await prisma.order.update({
+      where: { id: req.params.id },
+      data: { status: toStatus },
+      include: { items: true },
+    });
+
+    logAction({
+      userId: req.user.id,
+      action: 'UPDATE',
+      entityType: 'Order',
+      entityId: updated.id,
+      metadata: { fromStatus: order.status, toStatus },
+      req,
+    });
+
+    res.status(200).json({ status: 'success', data: { order: updated } });
+  });
+
+exports.shipOrder = transitionOrderStatus(['CONFIRMED'], 'SHIPPED');
+exports.deliverOrder = transitionOrderStatus(['SHIPPED'], 'DELIVERED');
+
+// Refund is reachable from CONFIRMED/SHIPPED/DELIVERED — the money side of a
+// refund (payment gateway) is out of scope here; this only marks the order
+// and is the hook point where that integration would plug in.
+exports.refundOrder = transitionOrderStatus(['CONFIRMED', 'SHIPPED', 'DELIVERED'], 'REFUNDED');
+

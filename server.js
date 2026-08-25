@@ -16,6 +16,7 @@ const authRoute = require('./routes/authRoute');
 const orderRoute = require('./routes/orderRoute');
 const warehouseRoute = require('./routes/warehouseRoute');
 const productRoute = require('./routes/productRoute');
+const userRoute = require('./routes/userRoute');
 
 const app = express();
 
@@ -45,6 +46,7 @@ app.use('/api/v1/auth', authRoute);
 app.use('/api/v1/orders', orderRoute);
 app.use('/api/v1/warehouses', warehouseRoute);
 app.use('/api/v1/products', productRoute);
+app.use('/api/v1/users', userRoute);
 
 app.get('/', (req, res) => {
   res.send('ERP Inventory API is running');

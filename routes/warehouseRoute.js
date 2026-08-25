@@ -6,6 +6,7 @@ const {
   createWarehouseValidator,
   updateWarehouseValidator,
   warehouseIdValidator,
+  listWarehousesValidator,
 } = require('../validators/warehouseValidator');
 
 const router = express.Router();
@@ -14,7 +15,7 @@ router.use(protect);
 
 // Reading warehouses is fine for any authenticated role (staff need to see
 // where stock lives too) — only mutating them is admin-restricted.
-router.get('/', warehouseController.getAllWarehouses);
+router.get('/', listWarehousesValidator, warehouseController.getAllWarehouses);
 router.get('/:id', warehouseIdValidator, warehouseController.getWarehouse);
 router.get('/:id/stock', warehouseIdValidator, stockController.getWarehouseStock);
 

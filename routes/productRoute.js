@@ -7,13 +7,14 @@ const {
   updateProductValidator,
   productIdValidator,
   adjustStockValidator,
+  listProductsValidator,
 } = require('../validators/productValidator');
 
 const router = express.Router();
 
 router.use(protect);
 
-router.get('/', productController.getAllProducts);
+router.get('/', listProductsValidator, productController.getAllProducts);
 router.get('/:id', productIdValidator, productController.getProduct);
 router.get('/:id/stock', productIdValidator, stockController.getProductStock);
 

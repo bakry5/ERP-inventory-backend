@@ -1,5 +1,12 @@
-const { body, param } = require('express-validator');
+const { body, param, query } = require('express-validator');
 const validatorMiddleware = require('../middlewares/validatorMiddleware');
+
+exports.listProductsValidator = [
+  query('page').optional().isInt({ min: 1 }),
+  query('limit').optional().isInt({ min: 1, max: 100 }),
+  query('search').optional().trim().isLength({ max: 100 }),
+  validatorMiddleware,
+];
 
 exports.createProductValidator = [
   body('sku').trim().notEmpty().withMessage('SKU is required'),

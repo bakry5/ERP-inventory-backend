@@ -2,13 +2,32 @@ const asyncHandler = require('express-async-handler');
 const prisma = require('../config/database');
 const ApiError = require('../utils/apiError');
 const { logAction } = require('../services/auditLogService');
+const { getPagination } = require('../utils/pagination');
 
+// ------------------------------------------------------------------
+// GET /api/v1/products
+// Paginated, with an optional ?search= that matches name OR sku
+// (case-insensitive). Only active products are listed by default.
+// ------------------------------------------------------------------
 exports.getAllProducts = asyncHandler(async (req, res) => {
-  const products = await prisma.product.findMany({
-    where: { isActive: true },
-    orderBy: { createdAt: 'desc' },
-  });
-  res.status(200).json({ status: 'success', results: products.length, data: { products } });
+  const { skip, take, buildMeta } = getPagination(req.query);
+
+  const where = {
+    isActive: true,
+    ...(req.query.search && {
+      OR: [
+        { name: { contains: req.query.search, mode: 'insensitive' } },
+        { sku: { contains: req.query.search, mode: 'insensitive' } },
+      ],
+    }),
+  };
+
+  const [products, total] = await Promise.all([
+    prisma.product.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take }),
+    prisma.product.count({ where }),
+  ]);
+
+  res.status(200).json({ status: 'success', data: { products }, meta: buildMeta(total) });
 });
 
 exports.getProduct = asyncHandler(async (req, res, next) => {

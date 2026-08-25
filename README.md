@@ -14,9 +14,12 @@ erp-inventory-backend/
 ├── controllers/
 │   ├── authController.js      # register, verifyOtp, resendOtp, login, logout,
 │   │                           #   refreshToken, forgotPassword, resetPassword, getMe
-│   ├── orderController.js     # createOrder ($transaction + FOR UPDATE row locking)
+│   ├── orderController.js     # createOrder/confirmOrder/cancelOrder (reserve→confirm lifecycle),
+│   │                           #   getAllOrders, getOrder, shipOrder, deliverOrder, refundOrder
 │   ├── warehouseController.js # warehouse CRUD (RBAC: admin-only writes)
-│   └── productController.js   # product CRUD + adjustStock (manual stock in/out)
+│   ├── productController.js   # product CRUD + adjustStock (manual stock in/out)
+│   ├── stockController.js     # getWarehouseStock, getProductStock (read-only inventory views)
+│   └── userController.js      # admin user management: list, view, change role, (de)activate
 ├── middlewares/
 │   ├── authMiddleware.js      # protect, requireEmailVerified, allowedTo (RBAC)
 │   ├── rateLimiter.js         # Upstash sliding-window limiter factory
@@ -26,18 +29,22 @@ erp-inventory-backend/
 │   ├── authRoute.js
 │   ├── orderRoute.js
 │   ├── warehouseRoute.js
-│   └── productRoute.js
+│   ├── productRoute.js
+│   └── userRoute.js
 ├── services/
 │   └── auditLogService.js
 ├── utils/
 │   ├── apiError.js
 │   ├── tokens.js               # access/refresh JWT generation + cookie helpers
 │   ├── otp.js                  # OTP + reset-token generation/hashing
-│   └── email.js                # Nodemailer transporter (Brevo SMTP) + templates
+│   ├── email.js                # Nodemailer transporter (Brevo SMTP) + templates
+│   └── pagination.js           # shared ?page/?limit parsing + response meta
 ├── validators/
 │   ├── authValidator.js
 │   ├── warehouseValidator.js
-│   └── productValidator.js
+│   ├── productValidator.js
+│   ├── orderValidator.js
+│   └── userValidator.js
 ├── prisma/
 │   └── seed.js                 # seeds admin/manager/customer users, warehouses, products, stock
 ├── server.js
@@ -91,6 +98,50 @@ overselling-prevention reason as `createOrder`.
 `reservedQuantity`, and the derived `availableQuantity` (`quantity - reservedQuantity`) — the number
 that actually matters when deciding whether a new order can be placed.
 
+**Pagination**
+Every list endpoint (`GET /products`, `/warehouses`, `/orders`, `/orders/my-orders`, `/users`)
+accepts `?page=` (default 1) and `?limit=` (default 20, capped at 100) and returns a `meta` block
+alongside `data`: `{ page, limit, total, totalPages }`. `GET /products` also accepts `?search=`,
+matched case-insensitively against both `name` and `sku`.
+
+## API routes
+
+| Method | Route | Access | Notes |
+|---|---|---|---|
+| POST | `/auth/register` | public | sends OTP, no session yet |
+| POST | `/auth/verify-otp` | public | activates account, sets cookies |
+| POST | `/auth/resend-otp` | public | |
+| POST | `/auth/login` | public | |
+| POST | `/auth/logout` | authenticated | clears cookies for this device |
+| POST | `/auth/refresh-token` | authenticated (refresh cookie) | |
+| POST | `/auth/forgot-password` | public | |
+| PATCH | `/auth/reset-password/:token` | public (valid token) | bumps `tokenVersion` — logs out every device |
+| GET | `/auth/me` | authenticated | |
+| GET | `/warehouses` | authenticated | paginated |
+| GET | `/warehouses/:id` | authenticated | |
+| GET | `/warehouses/:id/stock` | authenticated | every product's quantity in this warehouse |
+| POST / PATCH | `/warehouses` `/warehouses/:id` | `SUPER_ADMIN`, `ADMIN` | |
+| DELETE | `/warehouses/:id` | `SUPER_ADMIN` | |
+| GET | `/products` | authenticated | paginated, `?search=` |
+| GET | `/products/:id` | authenticated | |
+| GET | `/products/:id/stock` | authenticated | this product's quantity across every warehouse |
+| POST / PATCH | `/products` `/products/:id` | `SUPER_ADMIN`, `ADMIN` | |
+| DELETE | `/products/:id` | `SUPER_ADMIN` | soft delete |
+| POST | `/products/stock/adjust` | `SUPER_ADMIN`, `ADMIN`, `WAREHOUSE_MANAGER` | manual stock-in/out |
+| GET | `/orders/my-orders` | authenticated | own orders, paginated |
+| GET | `/orders` | staff (`SUPER_ADMIN`/`ADMIN`/`WAREHOUSE_MANAGER`) | every order, `?status=` filter |
+| GET | `/orders/:id` | owner or staff | |
+| POST | `/orders` | authenticated + email-verified | creates `PENDING`, reserves stock |
+| PATCH | `/orders/:id/confirm` | staff | reserved → deducted, status `CONFIRMED` |
+| PATCH | `/orders/:id/cancel` | owner or staff | releases reservation, status `CANCELLED` |
+| PATCH | `/orders/:id/ship` | staff | `CONFIRMED` → `SHIPPED` |
+| PATCH | `/orders/:id/deliver` | staff | `SHIPPED` → `DELIVERED` |
+| PATCH | `/orders/:id/refund` | `SUPER_ADMIN`, `ADMIN` | `CONFIRMED`/`SHIPPED`/`DELIVERED` → `REFUNDED` (marks the order only — no payment-gateway integration here) |
+| GET | `/users` | `SUPER_ADMIN`, `ADMIN` | paginated, `?role=` filter |
+| GET | `/users/:id` | `SUPER_ADMIN`, `ADMIN` | |
+| PATCH | `/users/:id/deactivate` `/users/:id/reactivate` | `SUPER_ADMIN`, `ADMIN` | can't deactivate yourself |
+| PATCH | `/users/:id/role` | `SUPER_ADMIN` only | can't change your own role |
+
 ## RBAC — `allowedTo` middleware
 
 `middlewares/authMiddleware.js` exports `allowedTo(...roles)`. It's applied per-route, after
@@ -100,11 +151,7 @@ that actually matters when deciding whether a new order can be placed.
 router.post('/', allowedTo('SUPER_ADMIN', 'ADMIN'), createWarehouseValidator, warehouseController.createWarehouse);
 ```
 
-Current role gates:
-- **Warehouses** — read: any authenticated role. Create/update: `SUPER_ADMIN`, `ADMIN`. Delete: `SUPER_ADMIN` only.
-- **Products** — read: any authenticated role. Create/update: `SUPER_ADMIN`, `ADMIN`. Delete: `SUPER_ADMIN` only.
-- **Stock adjustment** (`POST /api/v1/products/stock/adjust`) — `SUPER_ADMIN`, `ADMIN`, `WAREHOUSE_MANAGER` (day-to-day stock-in/out is a warehouse manager's job, so it gets a wider role list than product deletion).
-- **Orders** — any authenticated + email-verified user can place an order for themselves.
+See the routes table above for the full set of role gates.
 
 ## Seeding
 

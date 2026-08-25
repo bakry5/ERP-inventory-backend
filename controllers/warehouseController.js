@@ -2,10 +2,17 @@ const asyncHandler = require('express-async-handler');
 const prisma = require('../config/database');
 const ApiError = require('../utils/apiError');
 const { logAction } = require('../services/auditLogService');
+const { getPagination } = require('../utils/pagination');
 
 exports.getAllWarehouses = asyncHandler(async (req, res) => {
-  const warehouses = await prisma.warehouse.findMany({ orderBy: { createdAt: 'desc' } });
-  res.status(200).json({ status: 'success', results: warehouses.length, data: { warehouses } });
+  const { skip, take, buildMeta } = getPagination(req.query);
+
+  const [warehouses, total] = await Promise.all([
+    prisma.warehouse.findMany({ orderBy: { createdAt: 'desc' }, skip, take }),
+    prisma.warehouse.count(),
+  ]);
+
+  res.status(200).json({ status: 'success', data: { warehouses }, meta: buildMeta(total) });
 });
 
 exports.getWarehouse = asyncHandler(async (req, res, next) => {
